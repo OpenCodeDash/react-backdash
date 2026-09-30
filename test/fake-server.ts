@@ -1,0 +1,282 @@
+import { vi } from "vitest"
+import type { Board, Column, Task } from "../src/types"
+
+export interface RecordedCall {
+  method: string
+  path: string
+  body?: unknown
+}
+
+export function nestError(status: number, message: string): Response {
+  return new Response(JSON.stringify({ statusCode: status, message, error: message }), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  })
+}
+
+function json(data: unknown, status = 200): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  })
+}
+
+function noContent(): Response {
+  return new Response(null, { status: 204 })
+}
+
+// A tiny in-memory stand-in for the backdash API: board + column CRUD on the
+// real routes, plus a /events SSE endpoint that either stays open (default) or
+// emits a single preloaded frame and closes.
+export function createFakeServer(sseFrame?: string) {
+  const boards = new Map<string, Board>()
+  let boardCounter = 0
+  let columnCounter = 0
+  let taskCounter = 0
+  const calls: RecordedCall[] = []
+
+  const reindexTasks = (tasks: Task[]): Task[] =>
+    tasks.map((t, i) => ({ ...t, position: i }))
+
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    const path = url.replace(/^http:\/\/fake/, "")
+    const method = init?.method ?? "GET"
+    const body = init?.body !== undefined ? (JSON.parse(String(init.body)) as never) : undefined
+    calls.push({ method, path, body })
+
+    if (path === "/events") {
+      const signal = init?.signal as AbortSignal | undefined
+      const encoder = new TextEncoder()
+      const bodyStream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          if (sseFrame) {
+            controller.enqueue(encoder.encode(sseFrame))
+            controller.close()
+          }
+        },
+        pull() {
+          if (sseFrame) return { value: undefined, done: true }
+          return new Promise<ReadResult<Uint8Array>>((_resolve, reject) => {
+            signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true })
+          })
+        },
+      })
+      return new Response(bodyStream, { status: 200, headers: { "Content-Type": "text/event-stream" } })
+    }
+
+    const segments = path.split("/").filter(Boolean)
+
+    // GET /kanban
+    if (method === "GET" && segments.length === 1 && segments[0] === "kanban") {
+      return json([...boards.values()].map(({ id, name }) => ({ id, name })))
+    }
+
+    // POST /kanban
+    if (method === "POST" && segments.length === 1 && segments[0] === "kanban") {
+      const { name } = body as { name: string }
+      const id = `b${String(++boardCounter).padStart(5, "0")}`
+      const board: Board = { id, name, columns: [] }
+      boards.set(id, board)
+      return json(board, 201)
+    }
+
+    // /kanban/:id
+    if (segments.length === 2 && segments[0] === "kanban") {
+      const board = boards.get(segments[1])
+      if (method === "GET") {
+        return board ? json(board) : nestError(404, `Board ${segments[1]} not found`)
+      }
+      if (method === "PUT") {
+        if (!board) return nestError(404, `Board ${segments[1]} not found`)
+        const renamed = { ...board, name: (body as { name: string }).name }
+        boards.set(segments[1], renamed)
+        return json(renamed)
+      }
+      if (method === "DELETE") {
+        if (!board) return nestError(404, `Board ${segments[1]} not found`)
+        boards.delete(segments[1])
+        return noContent()
+      }
+    }
+
+    // /kanban/:boardId/columns[/:columnId] and /order
+    if (segments.length >= 3 && segments[0] === "kanban" && segments[2] === "columns") {
+      const board = boards.get(segments[1])
+      if (!board) return nestError(404, `Board ${segments[1]} not found`)
+
+      if (method === "POST" && segments.length === 3) {
+        const { name, isQueue } = body as { name: string; isQueue?: boolean }
+        const column: Column = {
+          id: ++columnCounter,
+          name,
+          position: board.columns.length,
+          isQueue: isQueue ?? false,
+          pushDescription: null,
+          pullDescription: null,
+          tasks: [],
+        }
+        boards.set(board.id, { ...board, columns: [...board.columns, column] })
+        return json(column, 201)
+      }
+
+      if (segments.length === 4 && segments[3] === "order" && method === "PUT") {
+        const { columnIds } = body as { columnIds: number[] }
+        const columns = columnIds.map((id, i) => {
+          const found = board.columns.find((c) => c.id === id)
+          if (!found) throw new Error(`unknown column ${id}`)
+          return { ...found, position: i }
+        })
+        boards.set(board.id, { ...board, columns: columns.sort((a, b) => a.position - b.position) })
+        return json(columns)
+      }
+
+      if (segments.length === 4 && segments[3] !== "order") {
+        const columnId = Number(segments[3])
+        if (method === "PUT") {
+          const columns = board.columns.map((c) =>
+            c.id === columnId ? { ...c, ...(body as Partial<Column>) } : c,
+          )
+          boards.set(board.id, { ...board, columns })
+          return json(columns.find((c) => c.id === columnId))
+        }
+        if (method === "DELETE") {
+          boards.set(board.id, { ...board, columns: board.columns.filter((c) => c.id !== columnId) })
+          return noContent()
+        }
+      }
+
+      // /kanban/:boardId/columns/:columnId/tasks[...]
+      if (segments.length >= 5 && segments[4] === "tasks") {
+        const columnId = Number(segments[3])
+        const column = board.columns.find((c) => c.id === columnId)
+        if (!column) return nestError(404, `Column ${columnId} not found`)
+
+        // POST .../tasks
+        if (method === "POST" && segments.length === 5) {
+          const { name, description } = body as { name: string; description?: string }
+          const task: Task = {
+            id: ++taskCounter,
+            columnId,
+            name,
+            description: description ?? null,
+            position: column.tasks.length,
+            claimedBy: null,
+          }
+          const columns = board.columns.map((c) =>
+            c.id === columnId ? { ...c, tasks: reindexTasks([...c.tasks, task]) } : c,
+          )
+          boards.set(board.id, { ...board, columns })
+          return json(task, 201)
+        }
+
+        // PUT / DELETE .../tasks/:taskId
+        if (segments.length === 6) {
+          const taskId = Number(segments[5])
+          const task = column.tasks.find((t) => t.id === taskId)
+          if (!task) return nestError(404, `Task ${taskId} not found`)
+          if (method === "PUT") {
+            const next: Task = { ...task, ...(body as Partial<Task>), columnId, id: task.id }
+            const columns = board.columns.map((c) =>
+              c.id === columnId
+                ? { ...c, tasks: reindexTasks(c.tasks.map((t) => (t.id === taskId ? next : t))) }
+                : c,
+            )
+            boards.set(board.id, { ...board, columns })
+            return json(next)
+          }
+          if (method === "DELETE") {
+            const columns = board.columns.map((c) =>
+              c.id === columnId ? { ...c, tasks: c.tasks.filter((t) => t.id !== taskId) } : c,
+            )
+            boards.set(board.id, { ...board, columns })
+            return noContent()
+          }
+        }
+
+        // POST .../tasks/:taskId/(claim|release)
+        if (method === "POST" && segments.length === 7) {
+          const taskId = Number(segments[5])
+          const action = segments[6]
+          const task = column.tasks.find((t) => t.id === taskId)
+          if (!task) return nestError(404, `Task ${taskId} not found`)
+          if (action === "claim" && task.claimedBy) {
+            return nestError(409, `Task ${taskId} is already claimed`)
+          }
+          if (action === "release" && !task.claimedBy) {
+            return nestError(409, `Task ${taskId} is not claimed`)
+          }
+          const actor = (body as { actor?: string })?.actor
+          const next: Task = {
+            ...task,
+            claimedBy: action === "claim" ? actor ?? "dashboard" : null,
+          }
+          const columns = board.columns.map((c) =>
+            c.id === columnId
+              ? { ...c, tasks: c.tasks.map((t) => (t.id === taskId ? next : t)) }
+              : c,
+          )
+          boards.set(board.id, { ...board, columns })
+          return json(next)
+        }
+      }
+    }
+
+    // /kanban/:boardId/tasks/:taskId/move
+    if (
+      method === "POST" &&
+      segments.length === 5 &&
+      segments[0] === "kanban" &&
+      segments[2] === "tasks" &&
+      segments[4] === "move"
+    ) {
+      const board = boards.get(segments[1])
+      if (!board) return nestError(404, `Board ${segments[1]} not found`)
+      const taskId = Number(segments[3])
+      const { columnId, position } = body as { columnId: number; position?: number }
+      const target = board.columns.find((c) => c.id === columnId)
+      if (!target) return nestError(404, `Column ${columnId} not found`)
+      let moved: Task | null = null
+      let found = false
+      const columns = board.columns.map((c) => {
+        const task = c.tasks.find((t) => t.id === taskId)
+        if (task) {
+          moved = task
+          found = true
+        }
+        return { ...c, tasks: c.tasks.filter((t) => t.id !== taskId) }
+      })
+      if (!found || !moved) return nestError(404, `Task ${taskId} not found`)
+      const at = position === undefined ? target.tasks.length : Math.max(0, Math.min(position, target.tasks.length))
+      const next: Task = { ...moved, columnId }
+      const tasks = [...target.tasks]
+      tasks.splice(at, 0, next)
+      const withReindex = reindexTasks(tasks)
+      const finalColumns = columns.map((c) =>
+        c.id === columnId ? { ...c, tasks: withReindex } : c,
+      )
+      boards.set(board.id, { ...board, columns: finalColumns })
+      return json(withReindex.find((t) => t.id === taskId)!)
+    }
+
+    return nestError(404, `no route for ${method} ${path}`)
+  })
+
+  function seed(overrides: { id: string; name?: string; columns?: Column[] }): Board {
+    const columns = overrides.columns ?? []
+    // keep generated ids clear of seeded ones
+    columnCounter = Math.max(columnCounter, ...columns.map((c) => c.id))
+    taskCounter = Math.max(taskCounter, ...columns.flatMap((c) => c.tasks.map((t) => t.id)))
+    const board: Board = {
+      id: overrides.id,
+      name: overrides.name ?? overrides.id,
+      columns,
+    }
+    boards.set(board.id, board)
+    return board
+  }
+
+  return { fetchMock, calls, boards, seed }
+}
+
+export type FakeServer = ReturnType<typeof createFakeServer>
