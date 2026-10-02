@@ -1,10 +1,31 @@
 import { vi } from "vitest"
-import type { Board, Column, Tag, Task, TaskPriority } from "../src/types"
+import type { Account, Board, Column, Tag, Task, TaskPriority } from "../src/types"
 
 export interface RecordedCall {
   method: string
   path: string
   body?: unknown
+  headers?: Record<string, string>
+}
+
+const FIXED_DATE = "2026-01-01T00:00:00.000Z"
+
+function normalizeHeaders(headers: HeadersInit | undefined): Record<string, string> {
+  if (!headers) return {}
+  if (headers instanceof Headers) {
+    const out: Record<string, string> = {}
+    headers.forEach((value, key) => {
+      out[key] = value
+    })
+    return out
+  }
+  if (Array.isArray(headers)) return Object.fromEntries(headers)
+  return { ...headers }
+}
+
+function bearer(headers: Record<string, string>): string {
+  const header = headers.Authorization ?? headers.authorization ?? ""
+  return header.startsWith("Bearer ") ? header.slice("Bearer ".length) : ""
 }
 
 export function nestError(status: number, message: string): Response {
@@ -36,6 +57,19 @@ export function createFakeServer(sseFrame?: string) {
   let tagCounter = 0
   const calls: RecordedCall[] = []
 
+  // Minimal identity store for the /auth routes. `tokens` maps an issued token
+  // to the account name; registration/login rotate it.
+  const accounts = new Map<string, { account: Account; password: string }>()
+  const tokens = new Map<string, string>()
+  let accountCounter = 0
+  let tokenCounter = 0
+
+  function issueToken(name: string): string {
+    const token = `bdsk_${name}_${++tokenCounter}`
+    tokens.set(token, name)
+    return token
+  }
+
   const reindexTasks = (tasks: Task[]): Task[] =>
     tasks.map((t, i) => ({ ...t, position: i }))
 
@@ -47,7 +81,8 @@ export function createFakeServer(sseFrame?: string) {
     const path = url.replace(/^http:\/\/fake/, "")
     const method = init?.method ?? "GET"
     const body = init?.body !== undefined ? (JSON.parse(String(init.body)) as never) : undefined
-    calls.push({ method, path, body })
+    const headers = normalizeHeaders(init?.headers)
+    calls.push({ method, path, body, headers })
 
     if (path === "/events") {
       const signal = init?.signal as AbortSignal | undefined
@@ -67,6 +102,103 @@ export function createFakeServer(sseFrame?: string) {
         },
       })
       return new Response(bodyStream, { status: 200, headers: { "Content-Type": "text/event-stream" } })
+    }
+
+    // /auth/* — a minimal identity service. Tokens map to account names.
+    if (path === "/auth/register" && method === "POST") {
+      const { name, password } = body as { name: string; password: string }
+      // Mirrors the real server: open only for the first (admin) account.
+      if (accounts.size > 0) return nestError(403, "Registration is closed")
+      if (accounts.has(name)) return nestError(409, `Account ${name} already exists`)
+      const account: Account = {
+        id: `a${String(++accountCounter).padStart(5, "0")}`,
+        name,
+        kind: "user",
+        isAdmin: true,
+        createdAt: FIXED_DATE,
+      }
+      accounts.set(name, { account, password })
+      return json({ account, token: issueToken(name) }, 201)
+    }
+
+    if (path === "/auth/users" && method === "POST") {
+      const caller = tokens.get(bearer(headers))
+      const current = caller ? accounts.get(caller) : undefined
+      if (!current) return nestError(401, "Invalid bearer token")
+      if (!current.account.isAdmin) return nestError(403, "Admin account required")
+      const { name, password, isAdmin } = body as {
+        name: string
+        password: string
+        isAdmin?: boolean
+      }
+      if (accounts.has(name)) return nestError(409, `Account ${name} already exists`)
+      const account: Account = {
+        id: `a${String(++accountCounter).padStart(5, "0")}`,
+        name,
+        kind: "user",
+        isAdmin: !!isAdmin,
+        createdAt: FIXED_DATE,
+      }
+      accounts.set(name, { account, password })
+      return json({ account, token: issueToken(name) }, 201)
+    }
+
+    if (path === "/auth/login" && method === "POST") {
+      const { name, password } = body as { name: string; password: string }
+      const existing = accounts.get(name)
+      if (!existing || existing.password !== password) {
+        return nestError(401, "Invalid name or password")
+      }
+      return json({ account: existing.account, token: issueToken(name) })
+    }
+
+    if (path === "/auth/me" && method === "GET") {
+      const name = tokens.get(bearer(headers))
+      if (!name) return nestError(401, "Invalid bearer token")
+      return json(accounts.get(name)!.account)
+    }
+
+    if (path === "/auth/service" && (method === "GET" || method === "POST")) {
+      const caller = tokens.get(bearer(headers))
+      const current = caller ? accounts.get(caller) : undefined
+      if (!current) return nestError(401, "Invalid bearer token")
+      if (!current.account.isAdmin) return nestError(403, "Admin account required")
+
+      if (method === "GET") {
+        return json(
+          [...accounts.values()]
+            .map((entry) => entry.account)
+            .filter((account) => account.kind === "service"),
+        )
+      }
+
+      const { name: serviceName } = body as { name: string }
+      if (accounts.has(serviceName)) {
+        return nestError(409, `Account ${serviceName} already exists`)
+      }
+      const account: Account = {
+        id: `a${String(++accountCounter).padStart(5, "0")}`,
+        name: serviceName,
+        kind: "service",
+        isAdmin: false,
+        createdAt: FIXED_DATE,
+      }
+      accounts.set(serviceName, { account, password: "" })
+      return json({ account, token: issueToken(serviceName) }, 201)
+    }
+
+    if (path.startsWith("/auth/service/") && method === "DELETE") {
+      const caller = tokens.get(bearer(headers))
+      const current = caller ? accounts.get(caller) : undefined
+      if (!current) return nestError(401, "Invalid bearer token")
+      if (!current.account.isAdmin) return nestError(403, "Admin account required")
+      const id = path.slice("/auth/service/".length)
+      const entry = [...accounts.entries()].find(
+        ([, value]) => value.account.id === id && value.account.kind === "service",
+      )
+      if (!entry) return nestError(404, `Service account ${id} not found`)
+      accounts.delete(entry[0])
+      return noContent()
     }
 
     const segments = path.split("/").filter(Boolean)

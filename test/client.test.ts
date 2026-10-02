@@ -459,7 +459,181 @@ describe("BackdashClient tags", () => {
   })
 })
 
+describe("BackdashClient auth", () => {
+  function makeAuthedClient(server: FakeServer, token?: string): BackdashClient {
+    return createClient({
+      url: "http://fake",
+      fetchImpl: server.fetchMock as unknown as typeof fetch,
+      token,
+    })
+  }
+
+  it("sends the bearer token from options on every request", async () => {
+    const server = createFakeServer()
+    server.seed({ id: "b1", name: "Alpha" })
+    const client = makeAuthedClient(server, "bdsk_secret")
+
+    await client.listBoards()
+
+    expect(server.calls[0].headers?.Authorization).toBe("Bearer bdsk_secret")
+  })
+
+  it("setToken(null) clears the auth header", async () => {
+    const server = createFakeServer()
+    const client = makeAuthedClient(server, "bdsk_secret")
+
+    client.setToken(null)
+    await client.listBoards()
+
+    expect(server.calls[0].headers?.Authorization).toBeUndefined()
+  })
+
+  it("register adopts the returned token and returns the session", async () => {
+    const server = createFakeServer()
+    const client = makeClient(server)
+
+    const session = await client.register("alice", "password123")
+
+    expect(server.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/auth/register",
+      body: { name: "alice", password: "password123" },
+    })
+    expect(session.account.name).toBe("alice")
+    expect(session.token).toMatch(/^bdsk_/)
+
+    await client.listBoards()
+    expect(server.calls.at(-1)?.headers?.Authorization).toBe(`Bearer ${session.token}`)
+  })
+
+  it("login adopts the rotated token", async () => {
+    const server = createFakeServer()
+    const client = makeClient(server)
+    await client.register("alice", "password123")
+
+    const session = await client.login("alice", "password123")
+    expect(server.calls.at(-1)).toMatchObject({ method: "POST", path: "/auth/login" })
+
+    await client.listBoards()
+    expect(server.calls.at(-1)?.headers?.Authorization).toBe(`Bearer ${session.token}`)
+  })
+
+  it("login rejects bad credentials with a 401 BackdashError", async () => {
+    const server = createFakeServer()
+    const client = makeClient(server)
+    await client.register("alice", "password123")
+
+    await expect(client.login("alice", "wrong-password")).rejects.toMatchObject({
+      name: "BackdashError",
+      status: 401,
+    })
+  })
+
+  it("me returns the authenticated account", async () => {
+    const server = createFakeServer()
+    const client = makeClient(server)
+    await client.register("alice", "password123")
+
+    await expect(client.me()).resolves.toMatchObject({
+      name: "alice",
+      kind: "user",
+      isAdmin: true,
+    })
+  })
+
+  it("createUser provisions another user", async () => {
+    const server = createFakeServer()
+    const client = makeClient(server)
+    await client.register("alice", "password123")
+
+    const session = await client.createUser("bob", "password456")
+
+    expect(server.calls.at(-1)).toMatchObject({
+      method: "POST",
+      path: "/auth/users",
+      body: { name: "bob", password: "password456", isAdmin: false },
+    })
+    expect(session.account).toMatchObject({ name: "bob", isAdmin: false })
+  })
+
+  it("rejects a second open registration with 403", async () => {
+    const server = createFakeServer()
+    const client = makeClient(server)
+    await client.register("alice", "password123")
+
+    await expect(client.register("bob", "password456")).rejects.toMatchObject({
+      name: "BackdashError",
+      status: 403,
+    })
+  })
+})
+
+describe("BackdashClient service accounts", () => {
+  async function makeUserClient(server: FakeServer): Promise<BackdashClient> {
+    const client = makeClient(server)
+    await client.register("alice", "password123")
+    return client
+  }
+
+  it("createServiceAccount posts the name and returns a service session", async () => {
+    const server = createFakeServer()
+    const client = await makeUserClient(server)
+
+    const session = await client.createServiceAccount("agent-1")
+
+    expect(server.calls.at(-1)).toMatchObject({
+      method: "POST",
+      path: "/auth/service",
+      body: { name: "agent-1" },
+    })
+    expect(session.account.kind).toBe("service")
+    expect(session.token).toMatch(/^bdsk_/)
+  })
+
+  it("listServiceAccounts returns the service accounts", async () => {
+    const server = createFakeServer()
+    const client = await makeUserClient(server)
+    await client.createServiceAccount("agent-1")
+
+    await expect(client.listServiceAccounts()).resolves.toEqual([
+      expect.objectContaining({ name: "agent-1", kind: "service" }),
+    ])
+  })
+
+  it("revokeServiceAccount deletes the account", async () => {
+    const server = createFakeServer()
+    const client = await makeUserClient(server)
+    const session = await client.createServiceAccount("agent-1")
+
+    await client.revokeServiceAccount(session.account.id)
+
+    expect(server.calls.at(-1)).toMatchObject({
+      method: "DELETE",
+      path: `/auth/service/${session.account.id}`,
+    })
+    await expect(client.listServiceAccounts()).resolves.toEqual([])
+  })
+})
+
 describe("BackdashClient connection", () => {
+  it("sends the bearer token on the event stream", async () => {
+    const server = createFakeServer()
+    server.seed({ id: "b1", name: "Streamed" })
+    const client = createClient({
+      url: "http://fake",
+      fetchImpl: server.fetchMock as unknown as typeof fetch,
+      token: "bdsk_secret",
+    })
+
+    await client.connect()
+    await vi.waitFor(() => expect(server.calls.some((c) => c.path === "/events")).toBe(true))
+    expect(server.calls.find((c) => c.path === "/events")?.headers?.Authorization).toBe(
+      "Bearer bdsk_secret",
+    )
+
+    client.disconnect()
+  })
+
   it("connect() opens the stream, marks connected, and hydrates boards", async () => {
     const server = createFakeServer()
     server.seed({ id: "b1", name: "Hydrated" })

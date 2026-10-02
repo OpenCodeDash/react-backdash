@@ -3,6 +3,23 @@
 
 export type TaskPriority = "low" | "medium" | "high" | "urgent"
 
+export type AccountKind = "user" | "service"
+
+export interface Account {
+  id: string
+  name: string
+  kind: AccountKind
+  isAdmin: boolean
+  createdAt: string
+}
+
+// Returned once by register/login (and service-account creation). The bearer
+// token is not retrievable again, so a client must persist it.
+export interface AuthSession {
+  account: Account
+  token: string
+}
+
 export interface Tag {
   id: number
   name: string
