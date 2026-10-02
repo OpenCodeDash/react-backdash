@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { BackdashClient, BackdashError, createClient } from "../src/client/client"
-import { makeColumn, makeTask } from "./fixtures"
+import { makeColumn, makeTag, makeTask } from "./fixtures"
 import { createFakeServer, type FakeServer } from "./fake-server"
 
 function makeClient(server: FakeServer): BackdashClient {
@@ -79,7 +79,12 @@ describe("BackdashClient boards", () => {
     const client = makeClient(server)
 
     await client.loadBoard("b1")
-    expect(client.store.state.boardDetails["b1"]).toEqual({ id: "b1", name: "B", columns: [column] })
+    expect(client.store.state.boardDetails["b1"]).toEqual({
+      id: "b1",
+      name: "B",
+      columns: [column],
+      tags: [],
+    })
   })
 
   it("loadBoard resolves on 404 and clears stale detail", async () => {
@@ -317,6 +322,139 @@ describe("BackdashClient tasks", () => {
     const client = makeClient(server)
 
     await client.createTask("b1", 1, { name: "Orphan" })
+    expect(client.store.state.boardDetails).toEqual({})
+  })
+
+  it("createTask sends metadata and tagIds, and patches the detail", async () => {
+    const server = createFakeServer()
+    server.seed({
+      id: "b1",
+      name: "B",
+      columns: [makeColumn({ id: 1, position: 0 })],
+      tags: [makeTag({ id: 5, name: "backend" })],
+    })
+    const client = makeClient(server)
+
+    await client.loadBoard("b1")
+    const task = await client.createTask("b1", 1, {
+      name: "API",
+      priority: "high",
+      estimate: 3,
+      assignee: "alice",
+      dueAt: "2026-11-01",
+      tagIds: [5],
+    })
+    expect(server.calls.at(-1)).toMatchObject({
+      method: "POST",
+      path: "/kanban/b1/columns/1/tasks",
+      body: { name: "API", priority: "high", estimate: 3, tagIds: [5] },
+    })
+    expect(task.tags.map((t) => t.name)).toEqual(["backend"])
+    expect(client.store.state.boardDetails["b1"].columns[0].tasks[0].tags).toHaveLength(1)
+  })
+
+  it("updateTask replaces tags and clears nullable fields", async () => {
+    const server = createFakeServer()
+    const task = makeTask({
+      id: 1,
+      columnId: 1,
+      position: 0,
+      priority: "low",
+      tags: [makeTag({ id: 5, name: "backend" })],
+    })
+    server.seed({
+      id: "b1",
+      name: "B",
+      columns: [makeColumn({ id: 1, position: 0, tasks: [task] })],
+      tags: [makeTag({ id: 5, name: "backend" }), makeTag({ id: 6, name: "frontend" })],
+    })
+    const client = makeClient(server)
+
+    await client.loadBoard("b1")
+    const updated = await client.updateTask("b1", 1, 1, { priority: null, tagIds: [6] })
+    expect(server.calls.at(-1)).toMatchObject({
+      method: "PUT",
+      path: "/kanban/b1/columns/1/tasks/1",
+      body: { priority: null, tagIds: [6] },
+    })
+    expect(updated.priority).toBeNull()
+    expect(updated.tags.map((t) => t.name)).toEqual(["frontend"])
+    expect(client.store.state.boardDetails["b1"].columns[0].tasks[0].tags.map((t) => t.name)).toEqual([
+      "frontend",
+    ])
+  })
+})
+
+describe("BackdashClient tags", () => {
+  it("createTag posts and patches the board's tag list", async () => {
+    const server = createFakeServer()
+    server.seed({ id: "b1", name: "B", columns: [] })
+    const client = makeClient(server)
+
+    await client.loadBoard("b1")
+    const tag = await client.createTag("b1", { name: "frontend", color: "#0af" })
+    expect(server.calls.at(-1)).toMatchObject({
+      method: "POST",
+      path: "/kanban/b1/tags",
+      body: { name: "frontend", color: "#0af" },
+    })
+    expect(client.store.state.boardDetails["b1"].tags.map((t) => t.name)).toEqual(["frontend"])
+    expect(tag.id).toBeGreaterThan(0)
+  })
+
+  it("listTags returns the board's tags", async () => {
+    const server = createFakeServer()
+    server.seed({ id: "b1", name: "B", columns: [], tags: [makeTag({ id: 1, name: "a" })] })
+    const client = makeClient(server)
+    const tags = await client.listTags("b1")
+    expect(tags.map((t) => t.name)).toEqual(["a"])
+  })
+
+  it("updateTag patches the tag list and every task carrying it", async () => {
+    const server = createFakeServer()
+    const tag = makeTag({ id: 5, name: "old" })
+    const task = makeTask({ id: 1, columnId: 1, position: 0, tags: [tag] })
+    server.seed({
+      id: "b1",
+      name: "B",
+      columns: [makeColumn({ id: 1, position: 0, tasks: [task] })],
+      tags: [tag],
+    })
+    const client = makeClient(server)
+
+    await client.loadBoard("b1")
+    await client.updateTag("b1", 5, { name: "new" })
+    expect(client.store.state.boardDetails["b1"].tags.map((t) => t.name)).toEqual(["new"])
+    expect(
+      client.store.state.boardDetails["b1"].columns[0].tasks[0].tags.map((t) => t.name),
+    ).toEqual(["new"])
+  })
+
+  it("deleteTag removes it from the tag list and from tasks", async () => {
+    const server = createFakeServer()
+    const tag = makeTag({ id: 5, name: "gone" })
+    const task = makeTask({ id: 1, columnId: 1, position: 0, tags: [tag] })
+    server.seed({
+      id: "b1",
+      name: "B",
+      columns: [makeColumn({ id: 1, position: 0, tasks: [task] })],
+      tags: [tag],
+    })
+    const client = makeClient(server)
+
+    await client.loadBoard("b1")
+    await client.deleteTag("b1", 5)
+    expect(server.calls.at(-1)).toMatchObject({ method: "DELETE", path: "/kanban/b1/tags/5" })
+    expect(client.store.state.boardDetails["b1"].tags).toEqual([])
+    expect(client.store.state.boardDetails["b1"].columns[0].tasks[0].tags).toEqual([])
+  })
+
+  it("tags are a store no-op when the detail is not loaded", async () => {
+    const server = createFakeServer()
+    server.seed({ id: "b1", name: "B" })
+    const client = makeClient(server)
+
+    await client.createTag("b1", { name: "orphan" })
     expect(client.store.state.boardDetails).toEqual({})
   })
 })

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { createInitialStoreState, Store } from "../src/client/store"
-import { makeBoard, makeBoardSummary, makeColumn, makeEvent, makeTask } from "./fixtures"
+import { makeBoard, makeBoardSummary, makeColumn, makeEvent, makeTag, makeTask } from "./fixtures"
 
 describe("Store", () => {
   it("starts with the initial state", () => {
@@ -227,11 +227,81 @@ describe("Store", () => {
     })
   })
 
+  describe("tag patches", () => {
+    it("are no-ops when the board detail is not loaded", () => {
+      const store = new Store()
+      const tag = makeTag({ id: 1 })
+      store.applyTagAdded("b1", tag)
+      store.applyTagUpdated("b1", tag)
+      store.applyTagDeleted("b1", 1)
+      expect(store.state.boardDetails).toEqual({})
+    })
+
+    it("applyTagAdded inserts sorted and replaces an existing tag", () => {
+      const store = new Store()
+      const board = makeBoard([], { tags: [makeTag({ id: 1, name: "b" })] })
+      store.setBoardDetail(board)
+
+      store.applyTagAdded(board.id, makeTag({ id: 2, name: "a" }))
+      expect(store.state.boardDetails[board.id].tags.map((t) => t.name)).toEqual(["a", "b"])
+
+      store.applyTagAdded(board.id, makeTag({ id: 1, name: "z" }))
+      expect(store.state.boardDetails[board.id].tags.map((t) => t.name)).toEqual(["a", "z"])
+    })
+
+    it("applyTagUpdated patches the list and every task carrying the tag", () => {
+      const store = new Store()
+      const tag = makeTag({ id: 5, name: "old" })
+      const other = makeTag({ id: 6, name: "keep" })
+      const board = makeBoard(
+        [makeColumn({ id: 1, tasks: [makeTask({ id: 1, columnId: 1, tags: [tag, other] })] })],
+        { tags: [tag, other] },
+      )
+      store.setBoardDetail(board)
+
+      store.applyTagUpdated(board.id, { ...tag, name: "new" })
+      expect(store.state.boardDetails[board.id].tags.map((t) => t.name)).toEqual(["keep", "new"])
+      expect(
+        store.state.boardDetails[board.id].columns[0].tasks[0].tags.map((t) => t.name),
+      ).toEqual(["keep", "new"])
+    })
+
+    it("applyTagDeleted removes it from the list and from tasks", () => {
+      const store = new Store()
+      const tag = makeTag({ id: 5, name: "gone" })
+      const board = makeBoard(
+        [makeColumn({ id: 1, tasks: [makeTask({ id: 1, columnId: 1, tags: [tag] })] })],
+        { tags: [tag] },
+      )
+      store.setBoardDetail(board)
+
+      store.applyTagDeleted(board.id, 5)
+      expect(store.state.boardDetails[board.id].tags).toEqual([])
+      expect(store.state.boardDetails[board.id].columns[0].tasks[0].tags).toEqual([])
+    })
+  })
+
   describe("apply(event)", () => {
     it("board.created upserts a summary", () => {
       const store = new Store()
       store.apply(makeEvent("b1", "board.created", { id: "b1", name: "New" }))
       expect(store.state.boards).toEqual([{ id: "b1", name: "New" }])
+    })
+
+    it("tag.* events patch a loaded detail", () => {
+      const store = new Store()
+      const tag = makeTag({ id: 5, name: "a" })
+      const board = makeBoard([makeColumn({ id: 1 })], { tags: [] })
+      store.setBoardDetail(board)
+
+      store.apply(makeEvent(board.id, "tag.added", tag))
+      expect(store.state.boardDetails[board.id].tags.map((t) => t.name)).toEqual(["a"])
+
+      store.apply(makeEvent(board.id, "tag.updated", { ...tag, name: "b" }))
+      expect(store.state.boardDetails[board.id].tags.map((t) => t.name)).toEqual(["b"])
+
+      store.apply(makeEvent(board.id, "tag.deleted", { id: 5 }))
+      expect(store.state.boardDetails[board.id].tags).toEqual([])
     })
 
     it("board.updated refreshes a loaded detail but never creates one", () => {

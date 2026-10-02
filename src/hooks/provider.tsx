@@ -7,7 +7,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react"
-import { BackdashClient, type BackdashClientOptions } from "../client/client"
+import { BackdashClient, type BackdashClientOptions, type CreateTagInput, type CreateTaskInput, type UpdateTagInput, type UpdateTaskInput } from "../client/client"
 import type { StoreState } from "../client/store"
 
 interface BackdashContextValue {
@@ -75,13 +75,18 @@ export function useClientActions() {
       deleteColumn: (boardId: string, columnId: number) => client.deleteColumn(boardId, columnId),
       reorderColumns: (boardId: string, columnIds: number[]) =>
         client.reorderColumns(boardId, columnIds),
-      createTask: (boardId: string, columnId: number, input: { name: string; description?: string }) =>
+      listTags: (boardId: string) => client.listTags(boardId),
+      createTag: (boardId: string, input: CreateTagInput) => client.createTag(boardId, input),
+      updateTag: (boardId: string, tagId: number, input: UpdateTagInput) =>
+        client.updateTag(boardId, tagId, input),
+      deleteTag: (boardId: string, tagId: number) => client.deleteTag(boardId, tagId),
+      createTask: (boardId: string, columnId: number, input: CreateTaskInput) =>
         client.createTask(boardId, columnId, input),
       updateTask: (
         boardId: string,
         columnId: number,
         taskId: number,
-        input: { name?: string; description?: string },
+        input: UpdateTaskInput,
       ) => client.updateTask(boardId, columnId, taskId, input),
       deleteTask: (boardId: string, columnId: number, taskId: number) =>
         client.deleteTask(boardId, columnId, taskId),

@@ -115,6 +115,7 @@ Columns update in place as events arrive (`column.added`, `column.updated`, `col
 | `useBoard(id)` | `Board \| undefined` — detail with `columns` (each with `tasks`); auto-loads on first use, then live through `column.*`/`task.*` events. `undefined` until the first load resolves |
 | `useLoadBoard()` | `(id) => Promise<void>` — load (or reload) a board detail; deduped, a 404 clears the stale detail and resolves |
 | `useTasks(boardId, columnId)` | `Task[]` — tasks of one column, live through `task.*` events |
+| `useTags(boardId)` | `Tag[]` — tags defined on the board, live through `tag.*` events |
 
 ## Actions
 
@@ -133,12 +134,17 @@ client.updateColumn(boardId, columnId, { name?, isQueue?, pushDescription?, pull
 client.deleteColumn(boardId, columnId)                           // → void
 client.reorderColumns(boardId, columnIds /* number[] */)         // → Column[] (new order)
 
-client.createTask(boardId, columnId, { name, description? })     // → Task
-client.updateTask(boardId, columnId, taskId, { name?, description? }) // → Task
+client.createTask(boardId, columnId, { name, description?, priority?, estimate?, assignee?, dueAt?, tagIds? }) // → Task
+client.updateTask(boardId, columnId, taskId, { name?, description?, priority?, estimate?, assignee?, dueAt?, tagIds? }) // → Task
 client.deleteTask(boardId, columnId, taskId)                     // → void
 client.moveTask(boardId, taskId, { columnId, position? })        // → Task
 client.claimTask(boardId, columnId, taskId, actor?)              // → Task (server rejects non-queue columns)
 client.releaseTask(boardId, columnId, taskId)                    // → Task
+
+client.listTags(boardId)                                         // → Tag[]
+client.createTag(boardId, { name, description?, prompt?, color? }) // → Tag
+client.updateTag(boardId, tagId, { name?, description?, prompt?, color? }) // → Tag
+client.deleteTag(boardId, tagId)                                 // → void
 ```
 
 Errors throw `BackdashError` with `.status` and `.body`.
