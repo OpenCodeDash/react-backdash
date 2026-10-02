@@ -1,5 +1,5 @@
 import { vi } from "vitest"
-import type { Board, Column, Task } from "../src/types"
+import type { Board, Column, Tag, Task, TaskPriority } from "../src/types"
 
 export interface RecordedCall {
   method: string
@@ -33,10 +33,14 @@ export function createFakeServer(sseFrame?: string) {
   let boardCounter = 0
   let columnCounter = 0
   let taskCounter = 0
+  let tagCounter = 0
   const calls: RecordedCall[] = []
 
   const reindexTasks = (tasks: Task[]): Task[] =>
     tasks.map((t, i) => ({ ...t, position: i }))
+
+  const resolveTags = (board: Board, tagIds?: number[]): Tag[] =>
+    tagIds ? tagIds.map((id) => board.tags.find((t) => t.id === id)).filter((t): t is Tag => !!t) : []
 
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
@@ -76,7 +80,7 @@ export function createFakeServer(sseFrame?: string) {
     if (method === "POST" && segments.length === 1 && segments[0] === "kanban") {
       const { name } = body as { name: string }
       const id = `b${String(++boardCounter).padStart(5, "0")}`
-      const board: Board = { id, name, columns: [] }
+      const board: Board = { id, name, columns: [], tags: [] }
       boards.set(id, board)
       return json(board, 201)
     }
@@ -97,6 +101,72 @@ export function createFakeServer(sseFrame?: string) {
         if (!board) return nestError(404, `Board ${segments[1]} not found`)
         boards.delete(segments[1])
         return noContent()
+      }
+    }
+
+    // /kanban/:boardId/tags[/:tagId]
+    if (segments.length >= 3 && segments[0] === "kanban" && segments[2] === "tags") {
+      const board = boards.get(segments[1])
+      if (!board) return nestError(404, `Board ${segments[1]} not found`)
+
+      if (segments.length === 3) {
+        if (method === "GET") return json(board.tags)
+        if (method === "POST") {
+          const { name, description, prompt, color } = body as {
+            name: string
+            description?: string | null
+            prompt?: string | null
+            color?: string | null
+          }
+          if (board.tags.some((t) => t.name === name)) {
+            return nestError(409, `A tag named '${name}' already exists on this board`)
+          }
+          const tag: Tag = {
+            id: ++tagCounter,
+            name,
+            description: description ?? null,
+            prompt: prompt ?? null,
+            color: color ?? null,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          }
+          boards.set(board.id, {
+            ...board,
+            tags: [...board.tags, tag].sort((a, b) => a.name.localeCompare(b.name)),
+          })
+          return json(tag, 201)
+        }
+      }
+
+      if (segments.length === 4) {
+        const tagId = Number(segments[3])
+        const tag = board.tags.find((t) => t.id === tagId)
+        if (!tag) return nestError(404, `Tag ${tagId} not found`)
+        if (method === "PUT") {
+          const next: Tag = {
+            ...tag,
+            ...(body as Partial<Tag>),
+            id: tag.id,
+            updatedAt: "2026-01-02T00:00:00.000Z",
+          }
+          boards.set(board.id, {
+            ...board,
+            tags: board.tags.map((t) => (t.id === tagId ? next : t)),
+          })
+          return json(next)
+        }
+        if (method === "DELETE") {
+          const columns = board.columns.map((c) => ({
+            ...c,
+            tasks: c.tasks.map((t) => ({ ...t, tags: t.tags.filter((tt) => tt.id !== tagId) })),
+          }))
+          boards.set(board.id, {
+            ...board,
+            tags: board.tags.filter((t) => t.id !== tagId),
+            columns,
+          })
+          return noContent()
+        }
       }
     }
 
@@ -154,14 +224,29 @@ export function createFakeServer(sseFrame?: string) {
 
         // POST .../tasks
         if (method === "POST" && segments.length === 5) {
-          const { name, description } = body as { name: string; description?: string }
+          const input = body as {
+            name: string
+            description?: string
+            priority?: TaskPriority | null
+            estimate?: number | null
+            assignee?: string | null
+            dueAt?: string | null
+            tagIds?: number[]
+          }
           const task: Task = {
             id: ++taskCounter,
             columnId,
-            name,
-            description: description ?? null,
+            name: input.name,
+            description: input.description ?? null,
             position: column.tasks.length,
             claimedBy: null,
+            priority: input.priority ?? null,
+            estimate: input.estimate ?? null,
+            assignee: input.assignee ?? null,
+            dueAt: input.dueAt ?? null,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            tags: resolveTags(board, input.tagIds),
           }
           const columns = board.columns.map((c) =>
             c.id === columnId ? { ...c, tasks: reindexTasks([...c.tasks, task]) } : c,
@@ -176,7 +261,15 @@ export function createFakeServer(sseFrame?: string) {
           const task = column.tasks.find((t) => t.id === taskId)
           if (!task) return nestError(404, `Task ${taskId} not found`)
           if (method === "PUT") {
-            const next: Task = { ...task, ...(body as Partial<Task>), columnId, id: task.id }
+            const { tagIds, ...patch } = body as { tagIds?: number[] } & Partial<Task>
+            const next: Task = {
+              ...task,
+              ...patch,
+              id: task.id,
+              columnId,
+              tags: tagIds ? resolveTags(board, tagIds) : task.tags,
+              updatedAt: "2026-01-02T00:00:00.000Z",
+            }
             const columns = board.columns.map((c) =>
               c.id === columnId
                 ? { ...c, tasks: reindexTasks(c.tasks.map((t) => (t.id === taskId ? next : t))) }
@@ -262,15 +355,18 @@ export function createFakeServer(sseFrame?: string) {
     return nestError(404, `no route for ${method} ${path}`)
   })
 
-  function seed(overrides: { id: string; name?: string; columns?: Column[] }): Board {
+  function seed(overrides: { id: string; name?: string; columns?: Column[]; tags?: Tag[] }): Board {
     const columns = overrides.columns ?? []
     // keep generated ids clear of seeded ones
     columnCounter = Math.max(columnCounter, ...columns.map((c) => c.id))
     taskCounter = Math.max(taskCounter, ...columns.flatMap((c) => c.tasks.map((t) => t.id)))
+    const tags = overrides.tags ?? []
+    tagCounter = Math.max(tagCounter, ...tags.map((t) => t.id))
     const board: Board = {
       id: overrides.id,
       name: overrides.name ?? overrides.id,
       columns,
+      tags,
     }
     boards.set(board.id, board)
     return board

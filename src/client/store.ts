@@ -4,6 +4,7 @@ import type {
   BoardEventPayload,
   BoardSummary,
   Column,
+  Tag,
   Task,
 } from "../types"
 
@@ -39,6 +40,10 @@ function byPosition(a: Column, b: Column): number {
 
 function byTaskPosition(a: Task, b: Task): number {
   return a.position - b.position
+}
+
+function byTagName(a: Tag, b: Tag): number {
+  return a.name.localeCompare(b.name)
 }
 
 export class Store {
@@ -191,6 +196,55 @@ export class Store {
     this.setBoardDetail({ ...detail, columns })
   }
 
+  // ---------- Tag patches (no-op unless the board's detail is loaded) ----------
+
+  // Upserts a tag into the board's tag list. The HTTP response and the SSE
+  // event both carry the full tag, in either order.
+  applyTagAdded(boardId: string, tag: Tag): void {
+    const detail = this.state.boardDetails[boardId]
+    if (!detail) return
+    const tags = detail.tags.filter((t) => t.id !== tag.id)
+    tags.push(tag)
+    this.setBoardDetail({ ...detail, tags: tags.sort(byTagName) })
+  }
+
+  // A tag rename/field change must reach every task carrying the tag, not just
+  // the board's tag list. Tasks without the tag keep their identity.
+  applyTagUpdated(boardId: string, tag: Tag): void {
+    const detail = this.state.boardDetails[boardId]
+    if (!detail) return
+    const tags = detail.tags.map((t) => (t.id === tag.id ? tag : t)).sort(byTagName)
+    const columns = detail.columns.map((c) => ({
+      ...c,
+      tasks: c.tasks.map((t) =>
+        t.tags.some((onTask) => onTask.id === tag.id)
+          ? {
+              ...t,
+              tags: t.tags
+                .map((onTask) => (onTask.id === tag.id ? tag : onTask))
+                .sort(byTagName),
+            }
+          : t,
+      ),
+    }))
+    this.setBoardDetail({ ...detail, tags, columns })
+  }
+
+  applyTagDeleted(boardId: string, tagId: number): void {
+    const detail = this.state.boardDetails[boardId]
+    if (!detail) return
+    const tags = detail.tags.filter((t) => t.id !== tagId)
+    const columns = detail.columns.map((c) => ({
+      ...c,
+      tasks: c.tasks.map((t) =>
+        t.tags.some((onTask) => onTask.id === tagId)
+          ? { ...t, tags: t.tags.filter((onTask) => onTask.id !== tagId) }
+          : t,
+      ),
+    }))
+    this.setBoardDetail({ ...detail, tags, columns })
+  }
+
   // ---------- Event application ----------
 
   // Idempotent: events with seq <= lastSeq are ignored, so optimistic
@@ -206,8 +260,14 @@ export class Store {
         this.upsertBoard({ id: payload.id, name: payload.name })
         // The payload is a full BoardDetail and authoritative for a loaded
         // detail; never create one for a board that was not opened
-        if (this.state.boardDetails[payload.id]) {
-          this.setBoardDetail({ id: payload.id, name: payload.name, columns: payload.columns ?? [] })
+        const existing = this.state.boardDetails[payload.id]
+        if (existing) {
+          this.setBoardDetail({
+            id: payload.id,
+            name: payload.name,
+            columns: payload.columns ?? existing.columns,
+            tags: payload.tags ?? existing.tags,
+          })
         }
         return
       }
@@ -242,6 +302,17 @@ export class Store {
       case "task.deleted": {
         const { id } = event.payload as { id: number }
         this.applyTaskDeleted(event.boardId, id)
+        return
+      }
+      case "tag.added":
+        this.applyTagAdded(event.boardId, event.payload as Tag)
+        return
+      case "tag.updated":
+        this.applyTagUpdated(event.boardId, event.payload as Tag)
+        return
+      case "tag.deleted": {
+        const { id } = event.payload as { id: number }
+        this.applyTagDeleted(event.boardId, id)
         return
       }
       default:

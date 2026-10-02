@@ -1,8 +1,9 @@
 import { useCallback, useEffect } from "react"
 import { useBackdash, useStore } from "./provider"
-import type { Board, BoardSummary, Task } from "../types"
+import type { Board, BoardSummary, Tag, Task } from "../types"
 
 const EMPTY_TASKS: Task[] = []
+const EMPTY_TAGS: Tag[] = []
 
 export function useConnected(): boolean {
   return useStore((state) => state.connected)
@@ -42,4 +43,11 @@ export function useTasks(boardId: string, columnId: number): Task[] {
     state.boardDetails[boardId]?.columns.find((c) => c.id === columnId),
   )
   return column?.tasks ?? EMPTY_TASKS
+}
+
+// Tags defined on a board, kept live through tag.* events. The board must
+// already be loaded (useBoard does that on the board page); this only reads.
+export function useTags(boardId: string): Tag[] {
+  const board = useStore((state) => state.boardDetails[boardId])
+  return board?.tags ?? EMPTY_TAGS
 }

@@ -1,6 +1,40 @@
 import { EventStream, type EventStreamOptions } from "./events"
 import { Store, createInitialStoreState, type StoreState } from "./store"
-import type { BackdashEvent, Board, BoardSummary, Column, Task } from "../types"
+import type { BackdashEvent, Board, BoardSummary, Column, Tag, Task, TaskPriority } from "../types"
+
+export interface CreateTaskInput {
+  name: string
+  description?: string
+  priority?: TaskPriority | null
+  estimate?: number | null
+  assignee?: string | null
+  dueAt?: string | null
+  tagIds?: number[]
+}
+
+export interface UpdateTaskInput {
+  name?: string
+  description?: string
+  priority?: TaskPriority | null
+  estimate?: number | null
+  assignee?: string | null
+  dueAt?: string | null
+  tagIds?: number[]
+}
+
+export interface CreateTagInput {
+  name: string
+  description?: string | null
+  prompt?: string | null
+  color?: string | null
+}
+
+export interface UpdateTagInput {
+  name?: string
+  description?: string | null
+  prompt?: string | null
+  color?: string | null
+}
 
 export class BackdashError extends Error {
   status: number
@@ -270,12 +304,38 @@ export class BackdashClient {
     )
   }
 
+  // ---------- Tags ----------
+
+  listTags(boardId: string): Promise<Tag[]> {
+    return this.get<Tag[]>(`/kanban/${boardId}/tags`)
+  }
+
+  createTag(boardId: string, input: CreateTagInput): Promise<Tag> {
+    return this.post<Tag>(`/kanban/${boardId}/tags`, input).then((tag) => {
+      this.store.applyTagAdded(boardId, tag)
+      return tag
+    })
+  }
+
+  updateTag(boardId: string, tagId: number, input: UpdateTagInput): Promise<Tag> {
+    return this.put<Tag>(`/kanban/${boardId}/tags/${tagId}`, input).then((tag) => {
+      this.store.applyTagUpdated(boardId, tag)
+      return tag
+    })
+  }
+
+  deleteTag(boardId: string, tagId: number): Promise<void> {
+    return this.del(`/kanban/${boardId}/tags/${tagId}`).then(() => {
+      this.store.applyTagDeleted(boardId, tagId)
+    })
+  }
+
   // ---------- Tasks ----------
 
   createTask(
     boardId: string,
     columnId: number,
-    input: { name: string; description?: string },
+    input: CreateTaskInput,
   ): Promise<Task> {
     return this.post<Task>(`/kanban/${boardId}/columns/${columnId}/tasks`, input).then((task) => {
       this.store.applyTaskUpsert(boardId, task)
@@ -287,7 +347,7 @@ export class BackdashClient {
     boardId: string,
     columnId: number,
     taskId: number,
-    input: { name?: string; description?: string },
+    input: UpdateTaskInput,
   ): Promise<Task> {
     return this.put<Task>(`/kanban/${boardId}/columns/${columnId}/tasks/${taskId}`, input).then(
       (task) => {
