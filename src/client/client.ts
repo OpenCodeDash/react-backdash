@@ -10,6 +10,7 @@ export interface CreateTaskInput {
   assignee?: string | null
   dueAt?: string | null
   tagIds?: number[]
+  dependsOn?: number[]
 }
 
 export interface UpdateTaskInput {
@@ -20,6 +21,7 @@ export interface UpdateTaskInput {
   assignee?: string | null
   dueAt?: string | null
   tagIds?: number[]
+  dependsOn?: number[]
 }
 
 export interface CreateTagInput {

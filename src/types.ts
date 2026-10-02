@@ -27,6 +27,10 @@ export interface Task {
   createdAt: string
   updatedAt: string
   tags: Tag[]
+  // Ids of tasks this task depends on (prerequisites)
+  dependsOn: number[]
+  // Ids of tasks that depend on this task
+  dependents: number[]
 }
 
 export interface Column {
