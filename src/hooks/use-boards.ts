@@ -1,6 +1,6 @@
-import { useCallback, useEffect } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { useBackdash, useStore } from "./provider"
-import type { Board, BoardSummary, Tag, Task } from "../types"
+import type { Board, BoardSummary, SessionTask, Tag, Task } from "../types"
 
 const EMPTY_TASKS: Task[] = []
 const EMPTY_TAGS: Tag[] = []
@@ -50,4 +50,62 @@ export function useTasks(boardId: string, columnId: number): Task[] {
 export function useTags(boardId: string): Tag[] {
   const board = useStore((state) => state.boardDetails[boardId])
   return board?.tags ?? EMPTY_TAGS
+}
+
+// The kanban task a session is currently linked to, if any. Resolves the link
+// from the server by session id, loads that task's board so the task is live,
+// then tracks the task from the store (so its todos stay current). `refreshKey`
+// re-resolves the link when it changes (e.g. the session's busy flag), which
+// picks up a claim made mid-session.
+export function useSessionTask(
+  sessionId: string | undefined,
+  refreshKey?: unknown,
+): SessionTask | null {
+  const client = useBackdash()
+  const [linked, setLinked] = useState<{ boardId: string; taskId: number } | null>(null)
+  const [snapshot, setSnapshot] = useState<SessionTask | null>(null)
+
+  useEffect(() => {
+    if (!sessionId) {
+      setLinked(null)
+      setSnapshot(null)
+      return
+    }
+
+    let cancelled = false
+    client
+      .getTasksBySession(sessionId)
+      .then((found) => {
+        if (cancelled) return
+        const first = found[0] ?? null
+        setSnapshot(first)
+        setLinked(first ? { boardId: first.boardId, taskId: first.task.id } : null)
+        if (first) void client.loadBoard(first.boardId).catch(() => undefined)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setSnapshot(null)
+        setLinked(null)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [client, sessionId, refreshKey])
+
+  // Select the task object (a stable reference) so this never returns a fresh
+  // identity; the boardId is derived outside the selector.
+  const liveTask = useStore((state) => {
+    if (!linked) return undefined
+    const board = state.boardDetails[linked.boardId]
+    if (!board) return undefined
+    for (const column of board.columns) {
+      const task = column.tasks.find((t) => t.id === linked.taskId)
+      if (task) return task
+    }
+    return undefined
+  })
+
+  if (linked && liveTask) return { boardId: linked.boardId, task: liveTask }
+  return snapshot
 }

@@ -7,6 +7,7 @@ import type {
   Board,
   BoardSummary,
   Column,
+  SessionTask,
   Tag,
   Task,
   TaskPriority,
@@ -35,6 +36,7 @@ export interface UpdateTaskInput {
   tagIds?: number[]
   dependsOn?: number[]
   todos?: TaskTodo[]
+  sessionId?: string | null
 }
 
 export interface CreateTagInput {
@@ -277,6 +279,14 @@ export class BackdashClient {
 
   getBoard(id: string): Promise<Board> {
     return this.get<Board>(`/kanban/${id}`)
+  }
+
+  // Tasks linked to a given opencode session, newest first. Lets the session
+  // view resolve a session to its kanban task (and show the task's todos).
+  getTasksBySession(sessionId: string): Promise<SessionTask[]> {
+    return this.get<SessionTask[]>(
+      `/kanban/sessions/${encodeURIComponent(sessionId)}/tasks`,
+    )
   }
 
   // Fetch a board's detail into the store, unless events arrived while the
