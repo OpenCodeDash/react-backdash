@@ -1,5 +1,13 @@
 export { BackdashProvider, useBackdash, useStore, useClientActions } from "./hooks/provider"
-export { useConnected, useBoards, useBoard, useLoadBoard, useTasks, useTags } from "./hooks/use-boards"
+export {
+  useConnected,
+  useBoards,
+  useBoard,
+  useLoadBoard,
+  useTasks,
+  useTags,
+  useSessionTask,
+} from "./hooks/use-boards"
 export { BackdashClient, BackdashError, createClient } from "./client/client"
 export { Store, createInitialStoreState } from "./client/store"
 export { EventStream, parseSseFrames } from "./client/events"
@@ -22,6 +30,7 @@ export type {
   Column,
   ColumnEventPayload,
   ColumnEventType,
+  SessionTask,
   Tag,
   TagEventType,
   Task,

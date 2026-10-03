@@ -217,6 +217,28 @@ export function createFakeServer(sseFrame?: string) {
       return json(board, 201)
     }
 
+    // GET /kanban/sessions/:sessionId/tasks — tasks linked to a session
+    if (
+      method === "GET" &&
+      segments.length === 4 &&
+      segments[0] === "kanban" &&
+      segments[1] === "sessions" &&
+      segments[3] === "tasks"
+    ) {
+      const sessionId = segments[2]
+      const found: { boardId: string; task: Task }[] = []
+      for (const board of boards.values()) {
+        for (const column of board.columns) {
+          for (const task of column.tasks) {
+            if ((task as { sessionId?: string | null }).sessionId === sessionId) {
+              found.push({ boardId: board.id, task })
+            }
+          }
+        }
+      }
+      return json(found)
+    }
+
     // /kanban/:id
     if (segments.length === 2 && segments[0] === "kanban") {
       const board = boards.get(segments[1])

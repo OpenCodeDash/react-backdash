@@ -45,6 +45,9 @@ export interface Task {
   description: string | null
   position: number
   claimedBy: string | null
+  // Opencode session working this task; set on claim, cleared on release or
+  // when the task is moved to a done column.
+  sessionId: string | null
   priority: TaskPriority | null
   estimate: number | null
   assignee: string | null
@@ -57,6 +60,13 @@ export interface Task {
   dependsOn: number[]
   // Ids of tasks that depend on this task
   dependents: number[]
+}
+
+// A task plus the board it lives on, from the by-session lookup (where the
+// caller knows a session id but not which board its task is in).
+export interface SessionTask {
+  boardId: string
+  task: Task
 }
 
 export interface Column {

@@ -300,6 +300,22 @@ describe("BackdashClient tasks", () => {
     expect(client.store.state.boardDetails["b1"].columns[0].tasks[0].claimedBy).toBe("agent-1")
   })
 
+  it("getTasksBySession hits the session lookup route", async () => {
+    const server = createFakeServer()
+    const task = makeTask({ id: 1, columnId: 1, position: 0, sessionId: "ses_1" })
+    server.seed({ id: "b1", name: "B", columns: [makeColumn({ id: 1, position: 0, tasks: [task] })] })
+    const client = makeClient(server)
+
+    const found = await client.getTasksBySession("ses_1")
+    expect(server.calls.at(-1)).toMatchObject({
+      method: "GET",
+      path: "/kanban/sessions/ses_1/tasks",
+    })
+    expect(found).toHaveLength(1)
+    expect(found[0]!.boardId).toBe("b1")
+    expect(found[0]!.task.id).toBe(1)
+  })
+
   it("releaseTask clears claimedBy and patches the detail", async () => {
     const server = createFakeServer()
     const task = makeTask({ id: 1, columnId: 1, position: 0, claimedBy: "agent-1" })

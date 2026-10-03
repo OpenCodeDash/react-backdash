@@ -1,9 +1,9 @@
-import { act, render, screen } from "@testing-library/react"
+import { act, render, screen, waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 import { BackdashClient } from "../src/client/client"
 import { createClient } from "../src/client/client"
 import { BackdashProvider, useBackdash, useClientActions } from "../src/hooks/provider"
-import { useBoard, useBoards, useConnected, useTasks } from "../src/hooks/use-boards"
+import { useBoard, useBoards, useConnected, useSessionTask, useTasks } from "../src/hooks/use-boards"
 import { makeColumn, makeTask } from "./fixtures"
 import { createFakeServer, type FakeServer } from "./fake-server"
 
@@ -167,6 +167,57 @@ describe("useTasks", () => {
       client.store.applyTaskDeleted("b1", 1)
     })
     expect(screen.getByTestId("tasks").textContent).toBe("Task 2")
+  })
+})
+
+describe("useSessionTask", () => {
+  it("resolves the session's linked task and tracks it live", async () => {
+    const { server, client } = makeHarness()
+    const task = makeTask({ id: 1, columnId: 1, position: 0, sessionId: "ses_1" })
+    server.seed({
+      id: "b1",
+      name: "B",
+      columns: [makeColumn({ id: 1, position: 0, tasks: [task] })],
+    })
+
+    const Probe = () => {
+      const linked = useSessionTask("ses_1")
+      return <div data-testid="linked">{linked ? `${linked.boardId}:${linked.task.id}` : "none"}</div>
+    }
+
+    const { unmount } = render(
+      <ProviderFor client={client}>
+        <Probe />
+      </ProviderFor>,
+    )
+    expect(screen.getByTestId("linked").textContent).toBe("none")
+
+    await waitFor(() => {
+      expect(screen.getByTestId("linked").textContent).toBe("b1:1")
+    })
+    expect(server.calls.some((c) => c.path === "/kanban/sessions/ses_1/tasks")).toBe(true)
+    unmount()
+  })
+
+  it("is null when the session has no linked task", async () => {
+    const { client } = makeHarness()
+
+    const Probe = () => {
+      const linked = useSessionTask("ses_none")
+      return <div data-testid="linked">{linked ? "some" : "none"}</div>
+    }
+
+    const { unmount } = render(
+      <ProviderFor client={client}>
+        <Probe />
+      </ProviderFor>,
+    )
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(screen.getByTestId("linked").textContent).toBe("none")
+    unmount()
   })
 })
 
