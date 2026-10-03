@@ -10,6 +10,7 @@ import type {
   Tag,
   Task,
   TaskPriority,
+  TaskTodo,
 } from "../types"
 
 export interface CreateTaskInput {
@@ -21,6 +22,7 @@ export interface CreateTaskInput {
   dueAt?: string | null
   tagIds?: number[]
   dependsOn?: number[]
+  todos?: TaskTodo[]
 }
 
 export interface UpdateTaskInput {
@@ -32,6 +34,7 @@ export interface UpdateTaskInput {
   dueAt?: string | null
   tagIds?: number[]
   dependsOn?: number[]
+  todos?: TaskTodo[]
 }
 
 export interface CreateTagInput {
