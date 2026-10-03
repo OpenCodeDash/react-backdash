@@ -3,6 +3,14 @@
 
 export type TaskPriority = "low" | "medium" | "high" | "urgent"
 
+export type TaskTodoStatus = "pending" | "in_progress" | "completed"
+
+// A checklist item on a task. Mirrors TaskTodo in the backdash API.
+export interface TaskTodo {
+  content: string
+  status: TaskTodoStatus
+}
+
 export type AccountKind = "user" | "service"
 
 export interface Account {
@@ -43,6 +51,7 @@ export interface Task {
   dueAt: string | null
   createdAt: string
   updatedAt: string
+  todos: TaskTodo[]
   tags: Tag[]
   // Ids of tasks this task depends on (prerequisites)
   dependsOn: number[]

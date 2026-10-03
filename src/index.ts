@@ -27,6 +27,8 @@ export type {
   Task,
   TaskEventType,
   TaskPriority,
+  TaskTodo,
+  TaskTodoStatus,
   Account,
   AccountKind,
   AuthSession,
