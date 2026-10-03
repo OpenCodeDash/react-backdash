@@ -59,6 +59,8 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
 export interface EventStreamOptions {
   url: string
   fetchImpl?: typeof fetch
+  // Extra request headers (e.g. Authorization). `Accept` is always set.
+  headers?: Record<string, string>
   // Resume point, read on every (re)connect. Returns undefined to start fresh.
   lastEventId?: () => number | undefined
   onEvent: (event: BackdashEvent) => void
@@ -139,7 +141,7 @@ export class EventStream {
     const url =
       lastEventId === undefined ? this.options.url : `${this.options.url}${this.options.url.includes("?") ? "&" : "?"}lastEventId=${lastEventId}`
     const response = await fetchImpl(url, {
-      headers: { Accept: "text/event-stream" },
+      headers: { Accept: "text/event-stream", ...this.options.headers },
       signal,
     })
     if (!response.ok || !response.body) {

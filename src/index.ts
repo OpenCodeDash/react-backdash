@@ -27,4 +27,7 @@ export type {
   Task,
   TaskEventType,
   TaskPriority,
+  Account,
+  AccountKind,
+  AuthSession,
 } from "./types"

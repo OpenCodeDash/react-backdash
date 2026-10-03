@@ -56,6 +56,15 @@ export function useClientActions() {
   const client = useBackdash()
   return useMemo(
     () => ({
+      register: (name: string, password: string) => client.register(name, password),
+      login: (name: string, password: string) => client.login(name, password),
+      me: () => client.me(),
+      setToken: (token: string | null) => client.setToken(token),
+      createUser: (name: string, password: string, isAdmin = false) =>
+        client.createUser(name, password, isAdmin),
+      createServiceAccount: (name: string) => client.createServiceAccount(name),
+      listServiceAccounts: () => client.listServiceAccounts(),
+      revokeServiceAccount: (id: string) => client.revokeServiceAccount(id),
       createBoard: (name: string) => client.createBoard(name),
       renameBoard: (id: string, name: string) => client.renameBoard(id, name),
       deleteBoard: (id: string) => client.deleteBoard(id),

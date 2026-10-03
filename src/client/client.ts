@@ -1,6 +1,16 @@
 import { EventStream, type EventStreamOptions } from "./events"
 import { Store, createInitialStoreState, type StoreState } from "./store"
-import type { BackdashEvent, Board, BoardSummary, Column, Tag, Task, TaskPriority } from "../types"
+import type {
+  Account,
+  AuthSession,
+  BackdashEvent,
+  Board,
+  BoardSummary,
+  Column,
+  Tag,
+  Task,
+  TaskPriority,
+} from "../types"
 
 export interface CreateTaskInput {
   name: string
@@ -54,6 +64,9 @@ export interface BackdashClientOptions {
   url?: string
   fetchImpl?: typeof fetch
   headers?: Record<string, string>
+  // Bearer token for an authenticated account. Sent as `Authorization` on every
+  // request and on the event stream.
+  token?: string
   autoConnect?: boolean
   reconnect?: boolean
   minBackoffMs?: number
@@ -74,7 +87,11 @@ export class BackdashClient {
   constructor(options: BackdashClientOptions = {}) {
     this.url = (options.url ?? "http://localhost:3000").replace(/\/$/, "")
     this.fetchImpl = options.fetchImpl ?? fetch
-    this.headers = { "Content-Type": "application/json", ...options.headers }
+    this.headers = {
+      "Content-Type": "application/json",
+      ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
+      ...options.headers,
+    }
     this.options = options
     this.store = options.store ?? new Store(createInitialStoreState())
     if (options.autoConnect) void this.connect()
@@ -82,6 +99,13 @@ export class BackdashClient {
 
   get connected(): boolean {
     return this.store.state.connected
+  }
+
+  // Replaces (or clears) the bearer token used for subsequent requests and the
+  // event stream. register()/login() call this automatically.
+  setToken(token: string | null): void {
+    if (token) this.headers.Authorization = `Bearer ${token}`
+    else delete this.headers.Authorization
   }
 
   // ---------- HTTP ----------
@@ -130,6 +154,7 @@ export class BackdashClient {
     const opts: EventStreamOptions = {
       url: `${this.url}/events`,
       fetchImpl: this.fetchImpl,
+      headers: this.headers,
       lastEventId: () => (this.store.state.lastSeq > 0 ? this.store.state.lastSeq : undefined),
       onEvent: (event) => this.applyEvent(event),
       onResync: () => {
@@ -188,6 +213,57 @@ export class BackdashClient {
         }
       }),
     )
+  }
+
+  // ---------- Auth ----------
+
+  // Creates a user account and adopts its token.
+  async register(name: string, password: string): Promise<AuthSession> {
+    const session = await this.post<AuthSession>("/auth/register", {
+      name,
+      password,
+    })
+    this.setToken(session.token)
+    return session
+  }
+
+  // Exchanges credentials for a fresh token (invalidating the previous one) and
+  // adopts it.
+  async login(name: string, password: string): Promise<AuthSession> {
+    const session = await this.post<AuthSession>("/auth/login", {
+      name,
+      password,
+    })
+    this.setToken(session.token)
+    return session
+  }
+
+  // The account the current token authenticates as.
+  me(): Promise<Account> {
+    return this.get<Account>("/auth/me")
+  }
+
+  // Admin-only: provisions another user account. Registration is open only for
+  // the very first (admin) account, so this is how later users are created.
+  createUser(name: string, password: string, isAdmin = false): Promise<AuthSession> {
+    return this.post<AuthSession>("/auth/users", { name, password, isAdmin })
+  }
+
+  // ---------- Service accounts ----------
+
+  // Provisions an agent identity. The returned token is shown once; the
+  // creating account's own token is left untouched.
+  createServiceAccount(name: string): Promise<AuthSession> {
+    return this.post<AuthSession>("/auth/service", { name })
+  }
+
+  listServiceAccounts(): Promise<Account[]> {
+    return this.get<Account[]>("/auth/service")
+  }
+
+  // Deletes the service account, immediately invalidating its token.
+  revokeServiceAccount(id: string): Promise<void> {
+    return this.del(`/auth/service/${id}`)
   }
 
   // ---------- Boards ----------
